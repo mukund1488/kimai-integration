@@ -1,5 +1,6 @@
 import axios from 'axios';
 import ExcelJS from 'exceljs';
+import fs from 'fs';
 import yargs from 'yargs';
 
 // Kimai demo API URL and token (super admin or admin token)
@@ -15,7 +16,7 @@ const axiosInstance = axios.create({
     },
 });
 
-// Fetch all projects from the API to get the project ID by name
+// Fetch project ID by name
 async function fetchProjectIdByName(projectName) {
     try {
         const response = await axiosInstance.get('/projects');
@@ -33,7 +34,25 @@ async function fetchProjectIdByName(projectName) {
     }
 }
 
-// Fetch all timesheets for a given project (all users)
+// Fetch customer ID by name
+async function fetchCustomerIdByName(customerName) {
+    try {
+        const response = await axiosInstance.get('/customers');
+        const customer = response.data.find(c => c.name === customerName);
+
+        if (customer) {
+            return customer.id;  // Return the customer ID
+        } else {
+            console.error('Customer not found.');
+            return null;
+        }
+    } catch (error) {
+        console.error('Error fetching customers:', error.message);
+        return null;
+    }
+}
+
+// Fetch timesheets for a given project (all users)
 async function fetchTimesheetsForProject(projectId) {
     try {
         const response = await axiosInstance.get('/timesheets', {
@@ -42,16 +61,31 @@ async function fetchTimesheetsForProject(projectId) {
                 user: 'all',  // Fetch timesheets for all users
             },
         });
-        console.log('Timesheets data fetched:', response.data.length); // Log the length of data for debugging
         return response.data;  // Return the list of timesheets
     } catch (error) {
-        console.error('Error fetching timesheets:', error.message);
+        console.error('Error fetching timesheets for project:', error.message);
+        return [];
+    }
+}
+
+// Fetch timesheets for a given customer (all users)
+async function fetchTimesheetsForCustomer(customerId) {
+    try {
+        const response = await axiosInstance.get('/timesheets', {
+            params: {
+                customer: customerId,
+                user: 'all',  // Fetch timesheets for all users
+            },
+        });
+        return response.data;  // Return the list of timesheets
+    } catch (error) {
+        console.error('Error fetching timesheets for customer:', error.message);
         return [];
     }
 }
 
 // Convert timesheets data into an array suitable for Excel
-function convertTimesheetsToExcelData(timesheets) {
+function convertTimesheetsToExcelData(timesheets, projectName, customerName) {
     if (!timesheets || timesheets.length === 0) {
         console.log('No timesheet data available.');
         return [];
@@ -59,31 +93,32 @@ function convertTimesheetsToExcelData(timesheets) {
 
     return timesheets.map(timesheet => ({
         'Timesheet ID': timesheet.id || 'N/A',
-        'Project ID': timesheet.project || 'N/A',
+        'Project Name': projectName || 'N/A',
+        'Customer Name': customerName || 'N/A',
         'User ID': timesheet.user || 'N/A',
         'Activity ID': timesheet.activity || 'N/A',
         'Start Time': timesheet.begin || 'N/A',
         'End Time': timesheet.end || 'N/A',
         'Duration (seconds)': timesheet.duration || 'N/A',
-        'Description': timesheet.description || 'No Description',  // Correcting the default behavior
-        'Billable': timesheet.billable ? 'Yes' : 'No',  // Convert boolean to 'Yes'/'No'
+        'Description': timesheet.description || 'No Description',
+        'Billable': timesheet.billable ? 'Yes' : 'No',
     }));
 }
 
 // Save data to Excel file using ExcelJS
-async function saveToExcelFile(excelData, fileName) {
+async function saveToExcelFile(workbook, excelData, sheetName) {
     if (excelData.length === 0) {
         console.log('No data to save to Excel.');
         return;
     }
 
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Timesheets');
+    const worksheet = workbook.addWorksheet(sheetName);
 
     // Add column headers
     worksheet.columns = [
         { header: 'Timesheet ID', key: 'timesheet_id', width: 15 },
-        { header: 'Project ID', key: 'project_id', width: 15 },
+        { header: 'Project Name', key: 'project_name', width: 25 },
+        { header: 'Customer Name', key: 'customer_name', width: 25 },
         { header: 'User ID', key: 'user_id', width: 15 },
         { header: 'Activity ID', key: 'activity_id', width: 15 },
         { header: 'Start Time', key: 'start_time', width: 25 },
@@ -94,12 +129,11 @@ async function saveToExcelFile(excelData, fileName) {
     ];
 
     // Add rows one by one
-    console.log('Adding rows to Excel...');
     excelData.forEach(dataRow => {
-        // Convert the row object to an array matching the column order
         const row = [
             dataRow['Timesheet ID'],
-            dataRow['Project ID'],
+            dataRow['Project Name'],
+            dataRow['Customer Name'],
             dataRow['User ID'],
             dataRow['Activity ID'],
             dataRow['Start Time'],
@@ -110,51 +144,57 @@ async function saveToExcelFile(excelData, fileName) {
         ];
         worksheet.addRow(row);
     });
-
-    // Write the workbook to a file
-    await workbook.xlsx.writeFile(fileName);
-    console.log(`Excel file saved as: ${fileName}`);
 }
 
 // Main function to fetch, process and save timesheets data to Excel
 async function generateTimesheetReport() {
-    console.log('Parsed arguments:', process.argv);
+    // Use yargs to parse arguments
     const argv = yargs(process.argv.slice(2))
         .option('project', {
-            alias: 'p',        // Alias for the project argument
             description: 'Name of the project to fetch timesheets for',
-            type: 'string',    // Ensure the project name is expected to be a string
-            demandOption: true // Mark the project argument as required
+            type: 'string',
+        })
+        .option('customer', {
+            description: 'Name of the customer to fetch timesheets for',
+            type: 'string',
         })
         .argv;
-    const project = argv.project;
-    console.log('Project name:', project);
-    if (!project) {
-        console.log('Please provide a project name using --project=<project-name>');
+
+    const { project, customer } = argv;
+
+    // Check if at least one argument is provided
+    if (!project && !customer) {
+        console.log('Please provide either a project name or a customer name.');
         return;
     }
 
-    // Step 1: Fetch project ID by project name
-    const projectId = await fetchProjectIdByName(project);
+    // Initialize the workbook for the Excel file
+    const workbook = new ExcelJS.Workbook();
 
-    if (!projectId) {
-        console.log('Could not find project ID for the given project name.');
-        return;
+    // Fetch project timesheets if project name is provided
+    if (project) {
+        const projectId = await fetchProjectIdByName(project);
+        if (projectId) {
+            const timesheets = await fetchTimesheetsForProject(projectId);
+            const projectExcelData = convertTimesheetsToExcelData(timesheets, project, null);
+            await saveToExcelFile(workbook, projectExcelData, 'Project Timesheets');
+        }
     }
 
-    // Step 2: Fetch timesheets for the project
-    const timesheets = await fetchTimesheetsForProject(projectId);
-
-    if (timesheets.length > 0) {
-        // Step 3: Convert timesheets to Excel format
-        const excelData = convertTimesheetsToExcelData(timesheets);
-
-        // Step 4: Save data to Excel file
-        const fileName = `${project}_timesheets.xlsx`;  // File name with project name
-        await saveToExcelFile(excelData, fileName);
-    } else {
-        console.log('No timesheets found for this project.');
+    // Fetch customer timesheets if customer name is provided
+    if (customer) {
+        const customerId = await fetchCustomerIdByName(customer);
+        if (customerId) {
+            const timesheets = await fetchTimesheetsForCustomer(customerId);
+            const customerExcelData = convertTimesheetsToExcelData(timesheets, null, customer);
+            await saveToExcelFile(workbook, customerExcelData, 'Customer Timesheets');
+        }
     }
+
+    // Save the workbook to the file once both sheets are added
+    const fileName = 'timesheets_report.xlsx';
+    await workbook.xlsx.writeFile(fileName);
+    console.log(`Excel file saved as: ${fileName}`);
 }
 
 // Generate the timesheet report and save to Excel
