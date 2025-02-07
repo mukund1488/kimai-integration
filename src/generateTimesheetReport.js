@@ -1,6 +1,5 @@
 import axios from 'axios';
 import ExcelJS from 'exceljs';
-import fs from 'fs';
 import yargs from 'yargs';
 
 // Kimai demo API URL and token (super admin or admin token)
@@ -25,11 +24,29 @@ async function fetchProjectIdByName(projectName) {
         if (project) {
             return project.id;  // Return the project ID
         } else {
-            console.error('Project not found.');
+            console.error(`Project ${projectName} not found.`);
             return null;
         }
     } catch (error) {
         console.error('Error fetching projects:', error.message);
+        return null;
+    }
+}
+
+// Fetch customer ID from project ID
+async function fetchCustomerIdByProjectId(projectId) {
+    try {
+        const response = await axiosInstance.get(`/projects/${projectId}`);
+        const project = response.data;
+
+        if (project && project.customer) {
+            return project.customer;  // Return the customer ID associated with the project
+        } else {
+            console.error('Customer ID not found for this project.');
+            return null;
+        }
+    } catch (error) {
+        console.error('Error fetching project details:', error.message);
         return null;
     }
 }
@@ -43,7 +60,7 @@ async function fetchCustomerIdByName(customerName) {
         if (customer) {
             return customer.id;  // Return the customer ID
         } else {
-            console.error('Customer not found.');
+            console.error(`Customer ${customerName} not found.`);
             return null;
         }
     } catch (error) {
@@ -52,13 +69,34 @@ async function fetchCustomerIdByName(customerName) {
     }
 }
 
-// Fetch timesheets for a given project (all users)
-async function fetchTimesheetsForProject(projectId) {
+// Fetch customer details by customer ID
+async function fetchCustomerDetailsById(customerId) {
     try {
+        const response = await axiosInstance.get(`/customers/${customerId}`);
+        const customer = response.data;
+
+        if (customer) {
+            return customer.name;  // Return the customer name
+        } else {
+            console.error('Customer not found.');
+            return 'Unknown Customer';
+        }
+    } catch (error) {
+        console.error('Error fetching customer:', error.message);
+        return 'Unknown Customer';
+    }
+}
+
+// Fetch timesheets for a given project (all users) within a specific date range
+async function fetchTimesheetsForProject(projectId, startDate, endDate) {
+    try {
+        console.log(projectId,startDate,endDate);
         const response = await axiosInstance.get('/timesheets', {
             params: {
                 project: projectId,
                 user: 'all',  // Fetch timesheets for all users
+                begin: startDate,
+                end: endDate,
             },
         });
         return response.data;  // Return the list of timesheets
@@ -68,13 +106,15 @@ async function fetchTimesheetsForProject(projectId) {
     }
 }
 
-// Fetch timesheets for a given customer (all users)
-async function fetchTimesheetsForCustomer(customerId) {
+// Fetch timesheets for a given customer (all users) within a specific date range
+async function fetchTimesheetsForCustomer(customerId, startDate, endDate) {
     try {
         const response = await axiosInstance.get('/timesheets', {
             params: {
                 customer: customerId,
                 user: 'all',  // Fetch timesheets for all users
+                begin: startDate,
+                end: endDate,
             },
         });
         return response.data;  // Return the list of timesheets
@@ -84,31 +124,75 @@ async function fetchTimesheetsForCustomer(customerId) {
     }
 }
 
+// Fetch user details by user ID
+async function fetchUserDetailsById(userId) {
+    try {
+        const response = await axiosInstance.get(`/users/${userId}`);
+        const user = response.data;
+
+        if (user) {
+            return {
+                name: user.alias || 'N/A',
+                userName: user.username || 'N/A',
+            };
+        } else {
+            console.error('User not found.');
+            return { firstName: 'Unknown', lastName: 'User' };
+        }
+    } catch (error) {
+        console.error('Error fetching user details:', error.message);
+        return { firstName: 'Unknown', lastName: 'User' };
+    }
+}
+
 // Convert timesheets data into an array suitable for Excel
-function convertTimesheetsToExcelData(timesheets, projectName, customerName) {
+async function convertTimesheetsToExcelData(timesheets,sheetName) {
     if (!timesheets || timesheets.length === 0) {
-        console.log('No timesheet data available.');
+        console.log(`No timesheet data available for:${sheetName}`);
         return [];
     }
 
-    return timesheets.map(timesheet => ({
-        'Timesheet ID': timesheet.id || 'N/A',
-        'Project Name': projectName || 'N/A',
-        'Customer Name': customerName || 'N/A',
-        'User ID': timesheet.user || 'N/A',
-        'Activity ID': timesheet.activity || 'N/A',
-        'Start Time': timesheet.begin || 'N/A',
-        'End Time': timesheet.end || 'N/A',
-        'Duration (seconds)': timesheet.duration || 'N/A',
-        'Description': timesheet.description || 'No Description',
-        'Billable': timesheet.billable ? 'Yes' : 'No',
-    }));
+    const excelData = [];
+
+    for (const timesheet of timesheets) {
+        // Fetch project name by project ID
+        const projectId = timesheet.project;
+        const projectResponse = await axiosInstance.get(`/projects/${projectId}`);
+        const projectName = projectResponse.data.name || 'Unknown Project';
+
+        // Fetch customer ID from the project
+        const customerId = await fetchCustomerIdByProjectId(projectId);
+
+        // Fetch customer name using the customer ID
+        const customerName = await fetchCustomerDetailsById(customerId);
+
+        // Fetch user details by user ID
+        const userDetails = await fetchUserDetailsById(timesheet.user);
+        const name = `${userDetails.name} `;
+        const userName = `${userDetails.userName} `;
+
+        excelData.push({
+            'Timesheet ID': timesheet.id || 'N/A',
+            'Project Name': projectName || 'N/A',
+            'Customer Name': customerName || 'N/A',
+            'User Name': name || 'N/A',
+            'User Login': userName || 'N/A',
+            'Activity ID': timesheet.activity || 'N/A',
+            'Start Time': timesheet.begin || 'N/A',
+            'End Time': timesheet.end || 'N/A',
+            'Duration (seconds)': timesheet.duration || 'N/A',
+            'Description': timesheet.description || 'No Description',
+            'Billable': timesheet.billable ? 'Yes' : 'No',
+        });
+    }
+
+    return excelData;
 }
 
 // Save data to Excel file using ExcelJS
 async function saveToExcelFile(workbook, excelData, sheetName) {
     if (excelData.length === 0) {
-        console.log('No data to save to Excel.');
+        console.log(`No data to save to Excel for sheet:${sheetName}`);
         return;
     }
 
@@ -119,7 +203,8 @@ async function saveToExcelFile(workbook, excelData, sheetName) {
         { header: 'Timesheet ID', key: 'timesheet_id', width: 15 },
         { header: 'Project Name', key: 'project_name', width: 25 },
         { header: 'Customer Name', key: 'customer_name', width: 25 },
-        { header: 'User ID', key: 'user_id', width: 15 },
+        { header: 'User Name', key: 'user_name', width: 25 },
+        { header: 'User Login', key: 'user_id', width: 15 },
         { header: 'Activity ID', key: 'activity_id', width: 15 },
         { header: 'Start Time', key: 'start_time', width: 25 },
         { header: 'End Time', key: 'end_time', width: 25 },
@@ -134,7 +219,8 @@ async function saveToExcelFile(workbook, excelData, sheetName) {
             dataRow['Timesheet ID'],
             dataRow['Project Name'],
             dataRow['Customer Name'],
-            dataRow['User ID'],
+            dataRow['User Name'],
+            dataRow['User Login'],
             dataRow['Activity ID'],
             dataRow['Start Time'],
             dataRow['End Time'],
@@ -158,9 +244,33 @@ async function generateTimesheetReport() {
             description: 'Name of the customer to fetch timesheets for',
             type: 'string',
         })
+        .option('start_date', {
+            description: 'Start date for the time period (YYYY-MM-DD)',
+            type: 'string',
+        })
+        .option('end_date', {
+            description: 'End date for the time period (YYYY-MM-DD)',
+            type: 'string',
+        })
         .argv;
 
-    const { project, customer } = argv;
+    const { project, customer, start_date, end_date } = argv;
+
+    // Get current date
+    const currentDate = new Date();
+    const firstDayOfCurrentMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+
+    // If no start date or end date provided, use the last date of previous month as start date and last day of current month as end date
+    let startDate = start_date ||  new Date(firstDayOfCurrentMonth - 1).toISOString().split('T')[0];
+    let endDate = end_date || new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1).toISOString().split('T')[0];
+    // Format start date to YYYY-MM-DDThh:mm:ss (last day of previous month, with time at 00:00:00)
+    const startDateFormatted = `${startDate}T00:00:00`;
+    // Format end date to YYYY-MM-DDThh:mm:ss (last day of current month, with time at 23:59:59)
+    const endDateFormatted = `${endDate}T23:59:59`;
+    // Log the start and end dates
+    console.log('Start Date (Last day of previous month):', startDateFormatted);
+    console.log('End Date (Last day of current month):', endDateFormatted);
+
 
     // Check if at least one argument is provided
     if (!project && !customer) {
@@ -175,18 +285,18 @@ async function generateTimesheetReport() {
     if (project) {
         const projectId = await fetchProjectIdByName(project);
         if (projectId) {
-            const timesheets = await fetchTimesheetsForProject(projectId);
-            const projectExcelData = convertTimesheetsToExcelData(timesheets, project, null);
+            const timesheets = await fetchTimesheetsForProject(projectId, startDateFormatted, endDateFormatted);
+            const projectExcelData = await convertTimesheetsToExcelData(timesheets,'Project Timesheets');
             await saveToExcelFile(workbook, projectExcelData, 'Project Timesheets');
         }
     }
 
     // Fetch customer timesheets if customer name is provided
     if (customer) {
-        const customerId = await fetchCustomerIdByName(customer);
+        const customerId = await fetchCustomerIdByName(customer);  // Corrected this part
         if (customerId) {
-            const timesheets = await fetchTimesheetsForCustomer(customerId);
-            const customerExcelData = convertTimesheetsToExcelData(timesheets, null, customer);
+            const timesheets = await fetchTimesheetsForCustomer(customerId, startDateFormatted, endDateFormatted);
+            const customerExcelData = await convertTimesheetsToExcelData(timesheets,'Customer Timesheets');
             await saveToExcelFile(workbook, customerExcelData, 'Customer Timesheets');
         }
     }
