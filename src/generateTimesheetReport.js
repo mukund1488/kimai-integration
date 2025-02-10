@@ -1,6 +1,12 @@
 import axios from 'axios';
 import ExcelJS from 'exceljs';
 import yargs from 'yargs';
+import fs from 'fs';
+import path from 'path';
+
+// Get the directory name of the current module using import.meta.url
+const __filename = new URL(import.meta.url).pathname;
+const __dirname = path.dirname(__filename);
 
 // Kimai demo API URL and token (super admin or admin token)
 const KIMAI_API_URL = 'https://demo.kimai.org/api';
@@ -14,6 +20,39 @@ const axiosInstance = axios.create({
         'Content-Type': 'application/json',
     },
 });
+
+const readCustomersFromFile = (filePath) => {
+    try {
+        const fileContent = fs.readFileSync(filePath, 'utf8');
+
+        // Parse the file content (assuming a text file with one customer per line)
+        const customerNames = fileContent.split('\n').map(line => line.trim()).filter(line => line);
+
+        return customerNames;
+    } catch (error) {
+        console.error('Error reading customers file:', error.message);
+        return [];
+    }
+};
+
+// Fetch all customers and return a map of customer names to IDs
+async function fetchAllCustomers() {
+    try {
+        const response = await axiosInstance.get('/customers');
+        const customerMap = {};
+
+        // Create a map of customer names to their corresponding IDs
+        response.data.forEach(customer => {
+            customerMap[customer.name] = customer.id;
+        });
+
+        return customerMap;
+    } catch (error) {
+        console.error('Error fetching all customers:', error.message);
+        return {};
+    }
+}
+
 
 // Fetch project ID by name
 async function fetchProjectIdByName(projectName) {
@@ -90,7 +129,7 @@ async function fetchCustomerDetailsById(customerId) {
 // Fetch timesheets for a given project (all users) within a specific date range
 async function fetchTimesheetsForProject(projectId, startDate, endDate) {
     try {
-        console.log(projectId,startDate,endDate);
+        console.log(projectId, startDate, endDate);
         const response = await axiosInstance.get('/timesheets', {
             params: {
                 project: projectId,
@@ -146,9 +185,9 @@ async function fetchUserDetailsById(userId) {
 }
 
 // Convert timesheets data into an array suitable for Excel
-async function convertTimesheetsToExcelData(timesheets,sheetName) {
+async function convertTimesheetsToExcelData(timesheets, sheetName) {
     if (!timesheets || timesheets.length === 0) {
-        console.log(`No timesheet data available for:${sheetName}`);
+        console.log(`No timesheet data available for: ${sheetName}`);
         return [];
     }
 
@@ -168,11 +207,10 @@ async function convertTimesheetsToExcelData(timesheets,sheetName) {
 
         // Fetch user details by user ID
         const userDetails = await fetchUserDetailsById(timesheet.user);
-        const name = `${userDetails.name} `;
-        const userName = `${userDetails.userName} `;
+        const name = `${userDetails.name}`;
+        const userName = `${userDetails.userName}`;
 
         excelData.push({
-            'Timesheet ID': timesheet.id || 'N/A',
             'Project Name': projectName || 'N/A',
             'Customer Name': customerName || 'N/A',
             'User Name': name || 'N/A',
@@ -192,7 +230,7 @@ async function convertTimesheetsToExcelData(timesheets,sheetName) {
 // Save data to Excel file using ExcelJS
 async function saveToExcelFile(workbook, excelData, sheetName) {
     if (excelData.length === 0) {
-        console.log(`No data to save to Excel for sheet:${sheetName}`);
+        console.log(`No data to save to Excel for sheet: ${sheetName}`);
         return;
     }
 
@@ -200,7 +238,6 @@ async function saveToExcelFile(workbook, excelData, sheetName) {
 
     // Add column headers
     worksheet.columns = [
-        { header: 'Timesheet ID', key: 'timesheet_id', width: 15 },
         { header: 'Project Name', key: 'project_name', width: 25 },
         { header: 'Customer Name', key: 'customer_name', width: 25 },
         { header: 'User Name', key: 'user_name', width: 25 },
@@ -216,7 +253,6 @@ async function saveToExcelFile(workbook, excelData, sheetName) {
     // Add rows one by one
     excelData.forEach(dataRow => {
         const row = [
-            dataRow['Timesheet ID'],
             dataRow['Project Name'],
             dataRow['Customer Name'],
             dataRow['User Name'],
@@ -256,27 +292,36 @@ async function generateTimesheetReport() {
 
     const { project, customer, start_date, end_date } = argv;
 
-    // Get current date
+    // Get current date and timestamp for filename
     const currentDate = new Date();
-    const firstDayOfCurrentMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const timestamp = currentDate.toISOString().replace(/[-:.]/g, '').slice(0, 15); // e.g., 20250210T120000
+    const reportsFolderPath = path.resolve(__dirname, '..', 'reports');
 
-    // If no start date or end date provided, use the last date of previous month as start date and last day of current month as end date
-    let startDate = start_date ||  new Date(firstDayOfCurrentMonth - 1).toISOString().split('T')[0];
-    let endDate = end_date || new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1).toISOString().split('T')[0];
+    const firstDayOfLastMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+    const lastDayOfLastMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 0);
+    // If no start date or end date provided, use the default date is last month start and end
+    let startDate = start_date || firstDayOfLastMonth.toLocaleDateString('en-CA');
+    let endDate = end_date || lastDayOfLastMonth.toLocaleDateString('en-CA');
     // Format start date to YYYY-MM-DDThh:mm:ss (last day of previous month, with time at 00:00:00)
     const startDateFormatted = `${startDate}T00:00:00`;
     // Format end date to YYYY-MM-DDThh:mm:ss (last day of current month, with time at 23:59:59)
     const endDateFormatted = `${endDate}T23:59:59`;
     // Log the start and end dates
-    console.log('Start Date (Last day of previous month):', startDateFormatted);
-    console.log('End Date (Last day of current month):', endDateFormatted);
+    console.log('Current Date:', currentDate);
+    console.log('Start Date:', startDateFormatted);
+    console.log('End Date:', endDateFormatted);
 
 
-    // Check if at least one argument is provided
-    if (!project && !customer) {
-        console.log('Please provide either a project name or a customer name.');
-        return;
+    // Ensure the reports folder exists
+    if (!fs.existsSync(reportsFolderPath)) {
+        fs.mkdirSync(reportsFolderPath);
     }
+
+    // Generate the full file path with timestamp
+    const fileName = `timesheet_report_${timestamp}.xlsx`;
+    const filePath = path.join(reportsFolderPath, fileName);
+
+    console.log('Saving report to:', filePath);
 
     // Initialize the workbook for the Excel file
     const workbook = new ExcelJS.Workbook();
@@ -286,25 +331,53 @@ async function generateTimesheetReport() {
         const projectId = await fetchProjectIdByName(project);
         if (projectId) {
             const timesheets = await fetchTimesheetsForProject(projectId, startDateFormatted, endDateFormatted);
-            const projectExcelData = await convertTimesheetsToExcelData(timesheets,'Project Timesheets');
+            const projectExcelData = await convertTimesheetsToExcelData(timesheets, 'Project Timesheets');
             await saveToExcelFile(workbook, projectExcelData, 'Project Timesheets');
         }
     }
 
+    const customersFilePath = path.resolve(__dirname, '..', 'files', 'customer_details.txt');
+    const customerNames = fs.existsSync(customersFilePath) ? readCustomersFromFile(customersFilePath) : [];
+    if (customerNames.length === 0) {
+        console.log('No customer list found or no customers in the file. Proceeding with individual customer or project fetch.');
+    }
     // Fetch customer timesheets if customer name is provided
     if (customer) {
-        const customerId = await fetchCustomerIdByName(customer);  // Corrected this part
+        customerNames.push(customer)
+        /*const customerId = await fetchCustomerIdByName(customer);
         if (customerId) {
-            const timesheets = await fetchTimesheetsForCustomer(customerId, startDateFormatted, endDateFormatted);
-            const customerExcelData = await convertTimesheetsToExcelData(timesheets,'Customer Timesheets');
+            const timesheets = await fetchTimesheetsForCustomer(customerId, start_date, end_date);
+            const customerExcelData = await convertTimesheetsToExcelData(timesheets, 'Customer Timesheets');
             await saveToExcelFile(workbook, customerExcelData, 'Customer Timesheets');
+        }*/
+    }
+    // If customer list is present, fetch timesheets for each customer
+    if (customerNames.length > 0) {
+        const customerMap = await fetchAllCustomers(); // Ensure this is awaited and completed
+
+        for (const customerName of customerNames) {
+            // Look up customer ID from the local map
+            const customerId = customerMap[customerName];
+            if (customerId) {
+                const timesheets = await fetchTimesheetsForCustomer(customerId, startDateFormatted, endDateFormatted);
+                const customerExcelData = await convertTimesheetsToExcelData(timesheets, `Timesheets for ${customerName}`);
+                await saveToExcelFile(workbook, customerExcelData, `Timesheets for ${customerName}`);
+            } else {
+                console.log(`Customer not found: ${customerName}`);
+            }
         }
     }
 
-    // Save the workbook to the file once both sheets are added
-    const fileName = 'timesheets_report.xlsx';
-    await workbook.xlsx.writeFile(fileName);
-    console.log(`Excel file saved as: ${fileName}`);
+    // Save the workbook to the file
+    if(workbook.worksheets.length === 0) {
+        console.log(`No data to save to Excel`);
+    }
+    else
+    {
+        await workbook.xlsx.writeFile(filePath);
+        console.log(`Excel file saved as: ${filePath}`);
+    }
+
 }
 
 // Generate the timesheet report and save to Excel
