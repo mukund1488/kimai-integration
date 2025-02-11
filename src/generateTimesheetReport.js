@@ -3,14 +3,21 @@ import ExcelJS from 'exceljs';
 import yargs from 'yargs';
 import fs from 'fs';
 import path from 'path';
+import dotenv from 'dotenv';
+
+// Load environment variables from .env file
+dotenv.config();
+
+// Access your variables from process.env
+const KIMAI_API_URL = process.env.KIMAI_API_URL;
+const API_TOKEN = process.env.API_TOKEN;
+
+console.log('Kimai API URL:', KIMAI_API_URL);
+console.log('API Token:', API_TOKEN);
 
 // Get the directory name of the current module using import.meta.url
 const __filename = new URL(import.meta.url).pathname;
 const __dirname = path.dirname(__filename);
-
-// Kimai demo API URL and token (super admin or admin token)
-const KIMAI_API_URL = 'https://demo.kimai.org/api';
-const API_TOKEN = 'token_super'; // Replace with your super admin API token
 
 // Axios instance with authentication
 const axiosInstance = axios.create({
@@ -169,72 +176,6 @@ async function fetchTimesheetsForEntity(
   return allTimesheets;
 }
 
-// Fetch timesheets for a given project (all users) within a specific date range
-async function fetchTimesheetsForProject(projectId, startDate, endDate) {
-  let allTimesheets = [];
-  let page = 1;
-  let hasMore = true;
-
-  while (hasMore) {
-    try {
-      const response = await axiosInstance.get('/timesheets', {
-        params: {
-          project: projectId,
-          user: 'all', // Fetch timesheets for all users
-          begin: startDate,
-          end: endDate,
-          page: page,
-        },
-      });
-
-      // Add the fetched timesheets to the list
-      allTimesheets = allTimesheets.concat(response.data);
-
-      // If the response contains fewer records than expected, stop the loop
-      hasMore = response.data.length === 50;
-      page++;
-    } catch (error) {
-      console.error('Error fetching timesheets for project:', error.message);
-      return [];
-    }
-  }
-
-  return allTimesheets;
-}
-
-// Fetch timesheets for a given customer (all users) within a specific date range
-async function fetchTimesheetsForCustomer(customerId, startDate, endDate) {
-  let allTimesheets = [];
-  let page = 1;
-  let hasMore = true;
-
-  while (hasMore) {
-    try {
-      const response = await axiosInstance.get('/timesheets', {
-        params: {
-          customer: customerId,
-          user: 'all', // Fetch timesheets for all users
-          begin: startDate,
-          end: endDate,
-          page: page,
-        },
-      });
-
-      // Add the fetched timesheets to the list
-      allTimesheets = allTimesheets.concat(response.data);
-
-      // If the response contains fewer records than expected, stop the loop
-      hasMore = response.data.length === 50;
-      page++;
-    } catch (error) {
-      console.error('Error fetching timesheets for customer:', error.message);
-      return [];
-    }
-  }
-
-  return allTimesheets;
-}
-
 // Fetch user details by user ID
 async function fetchUserDetailsById(userId) {
   try {
@@ -253,6 +194,33 @@ async function fetchUserDetailsById(userId) {
   } catch (error) {
     console.error('Error fetching user details:', error.message);
     return { firstName: 'Unknown', lastName: 'User' };
+  }
+}
+
+// Fetch activity details by activity ID, including the description
+async function fetchActivityDetailsById(activityId) {
+  try {
+    const response = await axiosInstance.get(`/activities/${activityId}`);
+    const activity = response.data;
+
+    if (activity) {
+      return {
+        name: activity.name || 'Unknown Activity',
+        description: activity.comment || 'No Description Available',
+      };
+    } else {
+      console.error('Activity not found.');
+      return {
+        name: 'Unknown Activity',
+        description: 'No Description Available',
+      };
+    }
+  } catch (error) {
+    console.error('Error fetching activity details:', error.message);
+    return {
+      name: 'Unknown Activity',
+      description: 'No Description Available',
+    };
   }
 }
 
@@ -277,22 +245,29 @@ async function convertTimesheetsToExcelData(timesheets, sheetName) {
     // Fetch customer name using the customer ID
     const customerName = await fetchCustomerDetailsById(customerId);
 
+    // Fetch activity details by activity ID (name and description)
+    const { name: activityName, description: activityDescription } =
+      await fetchActivityDetailsById(timesheet.activity);
+
     // Fetch user details by user ID
     const userDetails = await fetchUserDetailsById(timesheet.user);
     const name = `${userDetails.name}`;
     const userName = `${userDetails.userName}`;
+    const durationInHours =
+      timesheet.duration == null || timesheet.duration === ''
+        ? 'N/A'
+        : (timesheet.duration / 3600).toFixed(2);
 
     excelData.push({
-      'Project Name': projectName || 'N/A',
       'Customer Name': customerName || 'N/A',
+      'Project Name': projectName || 'N/A',
       'User Name': name || 'N/A',
       'User Login': userName || 'N/A',
-      'Activity ID': timesheet.activity || 'N/A',
+      'Activity Name': activityName || 'N/A', // Activity Name
+      'Activity Description': activityDescription || 'No Description Available',
       'Start Time': timesheet.begin || 'N/A',
-      'End Time': timesheet.end || 'N/A',
-      'Duration (seconds)': timesheet.duration || 'N/A',
+      'Duration (hours)': durationInHours,
       Description: timesheet.description || 'No Description',
-      Billable: timesheet.billable ? 'Yes' : 'No',
     });
   }
 
@@ -310,31 +285,29 @@ async function saveToExcelFile(workbook, excelData, sheetName) {
 
   // Add column headers
   worksheet.columns = [
-    { header: 'Project Name', key: 'project_name', width: 25 },
     { header: 'Customer Name', key: 'customer_name', width: 25 },
+    { header: 'Project Name', key: 'project_name', width: 25 },
     { header: 'User Name', key: 'user_name', width: 25 },
     { header: 'User Login', key: 'user_id', width: 15 },
-    { header: 'Activity ID', key: 'activity_id', width: 15 },
+    { header: 'Activity Name', key: 'activity_name', width: 30 },
+    { header: 'Activity Description', key: 'activity_description', width: 100 }, //
     { header: 'Start Time', key: 'start_time', width: 25 },
-    { header: 'End Time', key: 'end_time', width: 25 },
-    { header: 'Duration (seconds)', key: 'duration', width: 20 },
+    { header: 'Duration (hours)', key: 'duration', width: 20 },
     { header: 'Description', key: 'description', width: 50 },
-    { header: 'Billable', key: 'billable', width: 10 },
   ];
 
   // Add rows one by one
   excelData.forEach((dataRow) => {
     const row = [
-      dataRow['Project Name'],
       dataRow['Customer Name'],
+      dataRow['Project Name'],
       dataRow['User Name'],
       dataRow['User Login'],
-      dataRow['Activity ID'],
+      dataRow['Activity Name'], // Activity Name
+      dataRow['Activity Description'],
       dataRow['Start Time'],
-      dataRow['End Time'],
-      dataRow['Duration (seconds)'],
+      dataRow['Duration (hours)'],
       dataRow['Description'],
-      dataRow['Billable'],
     ];
     worksheet.addRow(row);
   });
